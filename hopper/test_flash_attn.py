@@ -116,6 +116,9 @@ def test_flash_attn_output(
     nheads_kv = nheads if mha_type == "mha" else (2 if mha_type == "gqa" else 1)
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
     for dv in [128, d] if d > 128 and d <= 192 else [d]:
+        # only Hopper or newer supports different V headdim
+        if dv != d and torch.cuda.get_device_capability("cuda")[0] < 9:
+            continue
         q_ref = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype_ref)
         if softcap > 0.0:
             # Ensure the values of qk are at least within softcap range.
@@ -336,6 +339,9 @@ def test_flash_attn_varlen_output(
     nheads_kv = nheads if mha_type == "mha" else (2 if mha_type == "gqa" else 1)
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
     for dv in [128, d] if d > 128 and d <= 192 else [d]:
+        # only Hopper or newer supports different V headdim
+        if dv != d and torch.cuda.get_device_capability("cuda")[0] < 9:
+            continue
         q_ref = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype_ref)
         if softcap > 0.0:
             # Ensure the values of qk are at least within softcap range.
@@ -644,6 +650,9 @@ def test_flash_attn_kvcache(
     dv_vals = [128, d] if d > 128 and d <= 192 else [d]
     has_qv_vals = [False]
     for dv, has_qv in itertools.product(dv_vals, has_qv_vals):
+        # only Hopper or newer supports different V headdim
+        if dv != d and torch.cuda.get_device_capability("cuda")[0] < 9:
+            continue
         q = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype_ref).to(dtype).to(dtype_ref)
         if has_qv:
             qv = torch.randn(batch_size, seqlen_q, nheads, dv, device=device, dtype=dtype_ref).to(dtype).to(dtype_ref)
