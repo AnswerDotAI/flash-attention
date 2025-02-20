@@ -987,29 +987,19 @@ void run_mha_bwd(Flash_bwd_params &params, cudaStream_t stream) {
 }
 
 std::array<int, 5> bwd_shapes(
-    const at::Tensor &dout,  // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_q
     const at::Tensor &q,     // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_q
     const at::Tensor &k,     // (b, s_k, h_k, d) or (total_k, h_k, d) if there is cu_seqlens_k
-    const at::Tensor &v,     // (b, s_k, h_k, d) or (total_k, h_k, d) if there is cu_seqlens_k
-    const at::Tensor &out,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_q
     const at::Tensor &softmax_lse,    // (b, h, s_q) or (h, total_q) if there is cu_seqlens_q
-    std::optional<at::Tensor> &dq_,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_q
-    std::optional<at::Tensor> &dk_,   // (b, s_k, h_k, d) or (total_k, h_k, d) if there is cu_seqlens_k
-    std::optional<at::Tensor> &dv_,   // (b, s_k, h_k, d) or (total_k, h_k, d) if there is cu_seqlens_k
     std::optional<const at::Tensor> &cu_seqlens_q_,   // b+1
     std::optional<const at::Tensor> &cu_seqlens_k_,   // b+1
     std::optional<const at::Tensor> &seqused_q_, // b. If given, only this many elements of each batch element's queries and outputs are used.
     std::optional<const at::Tensor> &seqused_k_, // b. If given, only this many elements of each batch element's keys are used.
     std::optional<int> max_seqlen_q_,
     std::optional<int> max_seqlen_k_,
-    float const softmax_scale,
     bool is_causal,
     int window_size_left,
     int window_size_right,
-    int const sink_token_length,
-    float const softcap,
-    bool const deterministic,
-    int const sm_margin) {
+    float const softcap) {
 
     #ifdef FLASHATTENTION_DISABLE_BACKWARD
         TORCH_CHECK(false, "This flash attention build does not support backward.");
@@ -1023,18 +1013,11 @@ std::array<int, 5> bwd_shapes(
     TORCH_CHECK(q_type == torch::kFloat16 || q_type == torch::kBFloat16,
                 "FlashAttention only support fp16 and bf16 data type");
     TORCH_CHECK(k.dtype() == q_type, "query and key must have the same dtype");
-    TORCH_CHECK(v.dtype() == q_type, "query and value must have the same dtype");
-    TORCH_CHECK(out.dtype() == q_type, "query and out must have the same dtype");
-    TORCH_CHECK(dout.dtype() == q_type, "query and dout must have the same dtype");
 
-    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
-    CHECK_DEVICE(out); CHECK_DEVICE(dout); CHECK_DEVICE(softmax_lse);
+    CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(softmax_lse);
 
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-    TORCH_CHECK(v.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-    TORCH_CHECK(out.stride(-1) == 1, "out tensor must have contiguous last dimension");
-    TORCH_CHECK(dout.stride(-1) == 1, "dout tensor must have contiguous last dimension");
 
     at::Tensor cu_seqlens_q;
     bool const is_varlen_q = cu_seqlens_q_.has_value();
@@ -1108,8 +1091,8 @@ std::array<int, 5> bwd_shapes(
     int const total_q_padded_rounded = round_multiple(total_q + batch_size * kBlockM, kBlockM);
     int const total_k_padded_rounded = round_multiple(total_k + batch_size * kBlockN, kBlockN);
 
-    return { seqlen_q_rounded, seqlen_k_rounded, total_q_padded_rounded, total_k_padded_rounded, head_size_rounded};
-    }
+    return { seqlen_q_rounded, seqlen_k_rounded, total_q_padded_rounded, total_k_padded_rounded, head_size_rounded };
+}
 
 
 // b: batch_size

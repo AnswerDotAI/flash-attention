@@ -295,29 +295,19 @@ def _flash_attn_backward_fake(
         dv = torch.empty_like(v)
     seqlen_q_rounded, seqlen_k_rounded, total_q_padded_rounded, total_k_padded_rounded, head_size_rounded = (
         flash_attn_3_cuda.backward_shapes(
-            dout,
             q,
             k,
-            v,
-            out,
             softmax_lse,
-            dq,
-            dk,
-            dv,
             cu_seqlens_q,
             cu_seqlens_k,
             seqused_q,
             seqused_k,
             max_seqlen_q,
             max_seqlen_k,
-            softmax_scale,
             causal,
             window_size_left,
             window_size_right,
-            sink_token_length,
             softcap,
-            deterministic,
-            sm_margin,
         )
     )
     if cu_seqlens_q is None and cu_seqlens_k is None and seqused_q is None and seqused_k is None:
