@@ -164,28 +164,37 @@ def _flash_attn_forward_fake(
       - softmax_lse: (batch_size, num_heads, seqlen_q) in float32.
       - For num_splits > 1, dummy accumulators are produced.
     """
-    if len(q.shape) == 4:
-        batch_size, seqlen_q, num_heads, head_size = q.shape
-        out = torch.empty((batch_size, seqlen_q, num_heads, head_size), device=q.device, dtype=q.dtype)
+    out_dtype = torch.bfloat16 if q.dtype == torch.float8_e4m3fn else q.dtype
+
+    # if all of these are none, then we are in the normal non-varlen case (!varlen)
+    if cu_seqlens_q is None and cu_seqlens_k is None and seqused_q is None and seqused_k is None and leftpad_k is None:
+        batch_size, seqlen_q, num_heads, _ = q.shape
+        head_size_v = v.shape[-1]
+        if out is None:
+            out = torch.empty((batch_size, seqlen_q, num_heads, head_size_v), device=q.device, dtype=out_dtype)
         softmax_lse = torch.empty((batch_size, num_heads, seqlen_q), device=q.device, dtype=torch.float32)
-    elif len(q.shape) == 3:
-        total_seq_len, num_heads, head_size = q.shape
-        out = torch.empty((total_seq_len, num_heads, head_size), device=q.device, dtype=q.dtype)
-        softmax_lse = torch.empty((total_seq_len, num_heads), device=q.device, dtype=torch.float32)
     else:
-        raise ValueError(f"Unsupported number of dimensions: {len(q.shape)}")
+        total_q, num_heads, _ = q.shape
+        head_size_v = v.shape[-1]
+        if out is None:
+            out = torch.empty((total_q, num_heads, head_size_v), device=q.device, dtype=out_dtype)
+            softmax_lse = torch.empty((num_heads, total_q), device=q.device, dtype=torch.float32)
+
     if num_splits > 1:
-        if len(q.shape) == 4:
-            out_accum = torch.empty((num_splits, batch_size, num_heads, seqlen_q, head_size), device=q.device, dtype=q.dtype)
+        if cu_seqlens_q is None and cu_seqlens_k is None and seqused_q is None and seqused_k is None and leftpad_k is None:
+            batch_size, seqlen_q, num_heads, _ = q.shape
+            head_size_v = v.shape[-1]
+            out_accum = torch.empty((num_splits, batch_size, num_heads, seqlen_q, head_size_v), device=q.device, dtype=torch.float32)
             softmax_lse_accum = torch.empty((num_splits, batch_size, num_heads, seqlen_q), device=q.device, dtype=torch.float32)
         else:
-            out_accum = torch.empty((num_splits, total_seq_len, num_heads, head_size), device=q.device, dtype=q.dtype)
-            softmax_lse_accum = torch.empty((num_splits, total_seq_len, num_heads), device=q.device, dtype=torch.float32)
+            total_q, num_heads, _ = q.shape
+            head_size_v = v.shape[-1]
+            out_accum = torch.empty((num_splits, num_heads, total_q, head_size_v), device=q.device, dtype=torch.float32)
+            softmax_lse_accum = torch.empty((num_splits, num_heads, total_q), device=q.device, dtype=torch.float32)
+
+        return out, softmax_lse, out_accum, softmax_lse_accum
     else:
-        # For num_splits == 1, we return empty tensors for the accumulators
-        out_accum = torch.empty((0,), device=q.device, dtype=q.dtype)
-        softmax_lse_accum = torch.empty((0,), device=q.device, dtype=torch.float32)
-    return out, softmax_lse, out_accum, softmax_lse_accum
+        return out, softmax_lse, torch.Tensor(), torch.Tensor()
 
 
 if torch.__version__ >= "2.4.0":
