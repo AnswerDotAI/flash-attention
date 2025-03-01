@@ -7,7 +7,10 @@ import torch
 import torch.nn.functional as F
 
 from einops import rearrange, repeat
-from flash_attn.layers.rotary import apply_rotary_emb
+try:
+    from flash_attn.layers.rotary import apply_rotary_emb
+except ImportError:
+    apply_rotary_emb = None
 
 from padding import pad_input, unpad_input
 from test_util import (
@@ -576,7 +579,7 @@ def test_flash_attn_varlen_output(
 # @pytest.mark.parametrize("seqlen_new_eq_seqlen_q", [True])
 @pytest.mark.parametrize("rotary_interleaved", [False, True] if not DISABLE_APPENDKV else [False])
 # @pytest.mark.parametrize("rotary_interleaved", [True])
-@pytest.mark.parametrize("rotary_fraction", [0.0, 0.5, 1.0] if not DISABLE_APPENDKV else [0.0])
+@pytest.mark.parametrize("rotary_fraction", [0.0, 0.5, 1.0] if (not DISABLE_APPENDKV) and (apply_rotary_emb is not None) else [0.0])
 # @pytest.mark.parametrize("rotary_fraction", [0.0])
 @pytest.mark.parametrize("page_size", [None] + ([1, 4, 128] if not DISABLE_PAGEDKV else []))
 # @pytest.mark.parametrize("page_size", [None])
@@ -590,8 +593,8 @@ def test_flash_attn_varlen_output(
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
 # @pytest.mark.parametrize('d', [56, 80])
-# @pytest.mark.parametrize("d", [128])
-@pytest.mark.parametrize("d", [192])
+@pytest.mark.parametrize("d", [64])
+# @pytest.mark.parametrize("d", [192])
 @pytest.mark.parametrize(
     "seqlen_q,seqlen_k",
     [
@@ -648,9 +651,9 @@ def test_flash_attn_kvcache(
     nheads_k = nheads if mha_type == "mha" else (1 if mha_type == "mqa" else 3)
     assert nheads % nheads_k == 0
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
-    dv_vals = [128, d] if d > 128 and d <= 192 else [d]
-    has_qv_vals = [False]
-    for dv, has_qv in itertools.product(dv_vals, has_qv_vals):
+    dv_vals = [128, d] if d > 128 and d <= 192 else ([512, d] if d <= 64 else [d])
+    for dv in dv_vals:
+        has_qv = d == 64 and dv == 512
         # only Hopper or newer supports different V headdim
         if dv != d and torch.cuda.get_device_capability("cuda")[0] < 9:
             continue

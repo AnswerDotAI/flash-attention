@@ -68,7 +68,8 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     // However, if Varlen (e.g., during decode where we have max_seqlens), using PersistentScheduler is better
     // since we'll avoid launching a bunch of thread blocks that immediately exit.
     // On Sm80, noncausal persistent seems a bit slower.
-    using Scheduler = std::conditional_t<Arch >= 90 ? (Split && !Varlen) : !((Is_causal && !Varlen) || (Varlen && Split)), SchedulerSingleTile, SchedulerPersistent>;
+    static constexpr bool UsePersistentScheduler = Arch >= 90 ? !(Split && !Varlen) : ((Is_causal && !Varlen) || (Varlen && Split));
+    using Scheduler = std::conditional_t<!UsePersistentScheduler, SchedulerSingleTile, SchedulerPersistent>;
     using AttnKernel = std::conditional_t<
         Arch >= 90,
         flash::enable_sm90_or_later<flash::FlashAttnFwdSm90<CollectiveMainloop, CollectiveEpilogue, Scheduler>>,
@@ -148,8 +149,15 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
         params.h / params.h_k,
         params.seqlen_q,
         params.seqlen_k, params.d, sizeof(Element),
-        params.tile_count_semaphore, params.cu_seqlens_q, params.seqused_q
+        params.tile_count_semaphore, params.cu_seqlens_q, params.seqused_q,
+        // params.num_m_blocks_ptr, params.num_splits_dynamic_ptr,
+        params.num_splits_dynamic_ptr,
     };
+
+    if constexpr (Varlen && UsePersistentScheduler) {
+        prepare_varlen_num_blocks(params, stream, PackGQA, kBlockM, kBlockN);
+        CHECK_CUDA_KERNEL_LAUNCH();
+    }
 
     int device;
     CHECK_CUDA(cudaGetDevice(&device));
@@ -198,7 +206,7 @@ void run_mha_fwd_(Flash_fwd_params &params, cudaStream_t stream) {
                 // On nvcc 12.8, hdim 128, without cluster is faster (730 vs 700 TFLOPS)
                 static constexpr bool Enable_cluster = Arch == 90 && (sizeof(T) == 2 ? (kHeadDim >= 192) : (kHeadDim == 192)) && !Is_causal && !Is_local && !Split && !PagedKV && !Varlen;
                 BOOL_SWITCH(params.qv_ptr, HasQV_, [&] {
-                    static constexpr bool HasQv = HasQV_ && Arch == 90 && !Is_FP8 && kHeadDim == 64 and false;
+                    static constexpr bool HasQv = HasQV_ && Arch == 90 && !Is_FP8 && kHeadDim == 64 && kHeadDimV == 512;
                     APPENDKV_SWITCH(params.knew_ptr, AppendKV, [&] {
                         // Only use Cluster if number of tiles along seqlen_q is even and not varlen
                         CLUSTER_SWITCH(cutlass::ceil_div(params.seqlen_q * (!PackGQA ? 1 : params.h / params.h_k), kBlockM) % 2 == 0, Use_cluster, [&] {
