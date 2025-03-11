@@ -121,6 +121,7 @@ struct Flash_fwd_params : public Qkv_params {
     index_t page_table_batch_stride;
     int page_size;
     int num_pages;
+    bool pagedkv_tma;
 
     // The dropout probability (probability of keeping an activation).
     float p_dropout;
@@ -133,7 +134,6 @@ struct Flash_fwd_params : public Qkv_params {
 
     // Local window size
     int window_size_left, window_size_right;
-    int sink_token_length;
 
     // Pointer to the RNG seed (idx 0) and offset (idx 1).
     uint64_t * rng_state;
@@ -206,7 +206,7 @@ struct Flash_bwd_params : public Flash_fwd_params {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <int Arch, typename T, int kHeadDim, int kHeadDimV, bool Split, bool PagedKV, bool Has_softcap, bool PackGQA>
+template <int Arch, typename T, int kHeadDim, int kHeadDimV, bool Split, bool PagedKVNonTMA, bool Has_softcap, bool PackGQA>
 void run_mha_fwd_(Flash_fwd_params &params, cudaStream_t stream);
 void prepare_varlen_num_blocks(Flash_fwd_params &params, cudaStream_t stream, bool packgqa, int blockM, int blockN);
 template <int Arch, typename T, int kHeadDim, bool Has_softcap>

@@ -33,13 +33,13 @@ void run_flash_fwd_combine(Flash_fwd_params &params, cudaStream_t stream) {
         {params.o_row_stride, _1{}, params.o_head_stride, !Varlen ? params.o_batch_stride : 0},  // stride_O
         static_cast<float*>(params.softmax_lse_ptr),
         {_1{}, !Varlen ? params.seqlen_q : params.total_q, !Varlen ? params.h * params.seqlen_q : 0},  // stride_LSE
-        params.cu_seqlens_q, params.seqused_q, params.num_splits_dynamic_ptr
+        params.cu_seqlens_q, params.seqused_q, params.num_splits_dynamic_ptr, params.tile_count_semaphore
     };
 
     typename CombineKernel::Params kernel_params = CombineKernel::to_underlying_arguments(args);
     int num_blocks_k = cute::ceil_div(params.dv, kBlockK);
-    int num_blocks_m = cute::ceil_div(params.seqlen_q * params.h * (!Varlen ? params.b : 1), kBlockM);
-    dim3 grid_m(num_blocks_m, num_blocks_k, !Varlen ? 1 : params.b);
+    int num_blocks_m = cute::ceil_div(params.seqlen_q * params.h, kBlockM);
+    dim3 grid_m(num_blocks_m, num_blocks_k, params.b);
     auto kernel = cutlass::device_kernel<CombineKernel>;
     int smem_size = CombineKernel::SharedStorageSize;
     if (smem_size >= 48 * 1024) {

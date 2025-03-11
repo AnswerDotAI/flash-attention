@@ -248,18 +248,22 @@ def _flash_attn_forward(
     causal: bool,
     window_size_left: int = -1,
     window_size_right: int = -1,
-    sink_token_length: int = 0,
     softcap: float = 0.0,
     rotary_interleaved: bool = True,
     num_splits: int = 1,
     pack_gqa: Optional[bool] = None,
     sm_margin: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    # Ensure the relevant inputs are contiguous
-    q, k, v, k_new, v_new = [maybe_contiguous(x) if x is not None else None for x in (q, k, v, k_new, v_new)]
-
-    # Call the actual CUDA kernel.
-    # Note: the kernel expects the two window_size values separately.
+    q, k, k_new, v_new = [maybe_contiguous(x) for x in (q, k, k_new, v_new)]
+    v = v.contiguous() if v.stride(-1) != 1 and v.stride(-3) != 1 else v
+    cu_seqlens_q, cu_seqlens_k, cu_seqlens_k_new = [
+        maybe_contiguous(x) for x in (cu_seqlens_q, cu_seqlens_k, cu_seqlens_k_new)
+    ]
+    seqused_q, seqused_k = [maybe_contiguous(x) for x in (seqused_q, seqused_k)]
+    page_table, kv_batch_idx, leftpad_k = [
+        maybe_contiguous(x) for x in (page_table, kv_batch_idx, leftpad_k)
+    ]
+    rotary_cos, rotary_sin = [maybe_contiguous(x) for x in (rotary_cos, rotary_sin)]
     out, softmax_lse, out_accum, softmax_lse_accum = flash_attn_3_cuda.fwd(
         q,
         k,
@@ -287,7 +291,6 @@ def _flash_attn_forward(
         causal,
         window_size_left,
         window_size_right,
-        sink_token_length,
         softcap,
         rotary_interleaved,
         num_splits,
@@ -400,12 +403,10 @@ def _flash_attn_backward(
     causal: bool,
     window_size_left: int = -1,
     window_size_right: int = -1,
-    sink_token_length: int = 0,
     softcap: float = 0.0,
     deterministic: bool = False,
     sm_margin: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert sink_token_length == 0, "sink_token_length not supported yet"
     # dq, dk, dv are allocated by us so they should already be contiguous
     dout, q, k, v, out = [maybe_contiguous(x) for x in (dout, q, k, v, out)]
     dq, dk, dv, softmax_d, softmax_lse_log2, dq_accum, dk_accum, dv_accum = flash_attn_3_cuda.bwd(
@@ -428,7 +429,6 @@ def _flash_attn_backward(
         causal,
         window_size_left,
         window_size_right,
-        sink_token_length,
         softcap,
         deterministic,
         sm_margin,
@@ -528,7 +528,6 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
         k_descale=None,
         v_descale=None,
         window_size=(-1, -1),
-        sink_token_length=0,
         softcap=0.0,
         deterministic=False,
         num_heads_q=None,
@@ -555,14 +554,12 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
             v_descale=v_descale,
             window_size_left=window_size[0],
             window_size_right=window_size[1],
-            sink_token_length=sink_token_length,
             softcap=softcap,
         )
         ctx.save_for_backward(q, k, v, out_padded, softmax_lse)
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
         ctx.window_size = window_size
-        ctx.sink_token_length = sink_token_length
         ctx.softcap = softcap
         ctx.deterministic = deterministic
         ctx.ndim = qkv.dim()
@@ -596,7 +593,6 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
             ctx.causal,
             ctx.window_size[0],
             ctx.window_size[1],
-            ctx.sink_token_length,
             ctx.softcap,
             ctx.deterministic,
         )
@@ -618,7 +614,6 @@ class FlashAttnFunc(torch.autograd.Function):
         k_descale=None,
         v_descale=None,
         window_size=(-1, -1),
-        sink_token_length=0,
         softcap=0.0,
         num_splits=1,
         pack_gqa=None,
@@ -655,7 +650,6 @@ class FlashAttnFunc(torch.autograd.Function):
             causal=causal,
             window_size_left=window_size[0],
             window_size_right=window_size[1],
-            sink_token_length=sink_token_length,
             softcap=softcap,
             num_splits=num_splits,
             pack_gqa=pack_gqa,
@@ -666,7 +660,6 @@ class FlashAttnFunc(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
         ctx.window_size = window_size
-        ctx.sink_token_length = sink_token_length
         ctx.softcap = softcap
         ctx.deterministic = deterministic
         ctx.sm_margin = sm_margin
@@ -696,7 +689,6 @@ class FlashAttnFunc(torch.autograd.Function):
             ctx.causal,
             ctx.window_size[0],
             ctx.window_size[1],
-            ctx.sink_token_length,
             ctx.softcap,
             ctx.deterministic,
             ctx.sm_margin,
@@ -727,7 +719,6 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         k_descale=None,
         v_descale=None,
         window_size=(-1, -1),
-        sink_token_length=0,
         softcap=0.0,
         num_splits=1,
         pack_gqa=None,
@@ -764,7 +755,6 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             causal=causal,
             window_size_left=window_size[0],
             window_size_right=window_size[1],
-            sink_token_length=sink_token_length,
             softcap=softcap,
             num_splits=num_splits,
             pack_gqa=pack_gqa,
@@ -777,7 +767,6 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
         ctx.window_size = window_size
-        ctx.sink_token_length = sink_token_length
         ctx.softcap = softcap
         ctx.deterministic = deterministic
         ctx.sm_margin = sm_margin
@@ -807,7 +796,6 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             ctx.causal,
             ctx.window_size[0],
             ctx.window_size[1],
-            ctx.sink_token_length,
             ctx.softcap,
             ctx.deterministic,
             ctx.sm_margin,
@@ -826,7 +814,6 @@ def flash_attn_qkvpacked_func(
     k_descale=None,
     v_descale=None,
     window_size=(-1, -1),
-    sink_token_length=0,
     softcap=0.0,
     deterministic=False,
     num_heads_q=None,
@@ -873,7 +860,6 @@ def flash_attn_qkvpacked_func(
         k_descale,
         v_descale,
         window_size,
-        sink_token_length,
         softcap,
         deterministic,
         num_heads_q,
@@ -891,7 +877,6 @@ def flash_attn_func(
     k_descale=None,
     v_descale=None,
     window_size=(-1, -1),
-    sink_token_length=0,
     softcap=0.0,
     num_splits=1,
     pack_gqa=None,
@@ -954,7 +939,6 @@ def flash_attn_func(
         k_descale,
         v_descale,
         window_size,
-        sink_token_length,
         softcap,
         num_splits,
         pack_gqa,
@@ -980,7 +964,6 @@ def flash_attn_varlen_func(
     k_descale=None,
     v_descale=None,
     window_size=(-1, -1),
-    sink_token_length=0,
     softcap=0.0,
     num_splits=1,
     pack_gqa=None,
@@ -1004,7 +987,6 @@ def flash_attn_varlen_func(
         k_descale,
         v_descale,
         window_size,
-        sink_token_length,
         softcap,
         num_splits,
         pack_gqa,
@@ -1039,8 +1021,7 @@ def flash_attn_with_kvcache(
     softmax_scale=None,
     causal=False,
     window_size=(-1, -1),  # -1 means infinite context window
-    sink_token_length=0,
-    softcap=0.0,  # 0.0 means deactivated
+    softcap=0.0, # 0.0 means deactivated
     rotary_interleaved=True,
     num_splits=0,  # Can be tuned for speed
     pack_gqa=None,  # Can be tuned for speed
@@ -1132,7 +1113,6 @@ def flash_attn_with_kvcache(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
     """
-    assert sink_token_length == 0
     assert k_cache.stride(-1) == 1, "k_cache must have contiguous last dimension"
     assert v_cache.stride(-1) == 1, "v_cache must have contiguous last dimension"
     if softmax_scale is None:
@@ -1166,7 +1146,6 @@ def flash_attn_with_kvcache(
         softmax_scale,
         causal=causal,
         window_size=window_size,
-        sink_token_length=sink_token_length,
         softcap=softcap,
         rotary_interleaved=rotary_interleaved,
         num_splits=num_splits,

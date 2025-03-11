@@ -103,8 +103,6 @@ COMPILED_HDIMS = (
 def test_flash_attn_output(
         seqlen_q, seqlen_k, d, causal, local, softcap, V_colmajor, deterministic, has_qv, mha_type, dtype
 ):
-    # sink_token_length = 0 if not local else 4
-    sink_token_length = 0 if not local else 0
     if V_colmajor and (seqlen_k % 16 != 0 or dtype != torch.float8_e4m3fn):
         pytest.skip("V_colmajor requires seqlen_k to be a multiple of 16 and dtype to be float8_e4m3fn")
     device = "cuda"
@@ -118,7 +116,10 @@ def test_flash_attn_output(
     # nheads = 1
     nheads_kv = nheads if mha_type == "mha" else (2 if mha_type == "gqa" else 1)
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
-    for dv in [128, d] if d > 128 and d <= 192 else [d]:
+    dv_vals = [128, d] if d > 128 and d <= 192 else ([512, d] if d <= 64 else [d])
+    if dtype == torch.float8_e4m3fn:
+        dv_vals = [d]
+    for dv in dv_vals:
         # only Hopper or newer supports different V headdim
         if dv != d and torch.cuda.get_device_capability("cuda")[0] < 9:
             continue
@@ -154,7 +155,6 @@ def test_flash_attn_output(
             qv=qv_ref,
             q_descale=q_descale, k_descale=k_descale, v_descale=v_descale,
             window_size=window_size,
-            sink_token_length=sink_token_length,
             softcap=softcap
         )
         out_pt, attn_pt = attention_ref(
@@ -167,7 +167,6 @@ def test_flash_attn_output(
             qv=qv_ref,
             q_descale=q_descale, k_descale=k_descale, v_descale=v_descale,
             window_size=window_size,
-            sink_token_length=sink_token_length,
             softcap=softcap,
             upcast=False,
             reorder_ops=True,
@@ -200,7 +199,6 @@ def test_flash_attn_output(
                 qv=qv,
                 q_descale=q_descale, k_descale=k_descale, v_descale=v_descale,
                 window_size=window_size,
-                sink_token_length=sink_token_length,
                 softcap=softcap,
                 pack_gqa=pack_gqa,
                 num_splits=num_splits
@@ -232,7 +230,6 @@ def test_flash_attn_output(
         #     d ** (-0.5),
         #     causal,
         #     window_size[0], window_size[1],
-        #     sink_token_length,
         #     softcap,
         #     deterministic,
         #     0,  # sm_margin
@@ -341,7 +338,10 @@ def test_flash_attn_varlen_output(
     # nheads = 1
     nheads_kv = nheads if mha_type == "mha" else (2 if mha_type == "gqa" else 1)
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
-    for dv in [128, d] if d > 128 and d <= 192 else [d]:
+    dv_vals = [128, d] if d > 128 and d <= 192 else ([512, d] if d <= 64 else [d])
+    if dtype == torch.float8_e4m3fn:
+        dv_vals = [d]
+    for dv in dv_vals:
         # only Hopper or newer supports different V headdim
         if dv != d and torch.cuda.get_device_capability("cuda")[0] < 9:
             continue
@@ -588,7 +588,7 @@ def test_flash_attn_varlen_output(
 @pytest.mark.parametrize("has_batch_idx", [False, True])
 # @pytest.mark.parametrize("has_batch_idx", [False])
 @pytest.mark.parametrize("varlen_q", [False, True])
-# @pytest.mark.parametrize("varlen_q", [True])
+# @pytest.mark.parametrize("varlen_q", [False])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
@@ -652,6 +652,8 @@ def test_flash_attn_kvcache(
     assert nheads % nheads_k == 0
     dtype_ref = torch.bfloat16 if dtype == torch.float8_e4m3fn else dtype
     dv_vals = [128, d] if d > 128 and d <= 192 else ([512, d] if d <= 64 else [d])
+    if dtype == torch.float8_e4m3fn:
+        dv_vals = [d]
     for dv in dv_vals:
         has_qv = d == 64 and dv == 512
         # only Hopper or newer supports different V headdim
